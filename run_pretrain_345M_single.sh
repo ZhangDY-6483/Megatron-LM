@@ -33,8 +33,8 @@ GPT_ARGS="--num-layers 24 \
           "
 
 OUTPUT_ARGS="--log-interval 1 \
-             --save-interval 100 \
-             --eval-interval 100 \
+             --save-interval 1000 \
+             --eval-interval 10 \
              --eval-iters 10"
 
 python pretrain_gpt.py \
