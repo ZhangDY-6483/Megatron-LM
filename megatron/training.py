@@ -619,7 +619,7 @@ def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
                 avg = total_loss_dict[key].item() / \
                       float(max(1, total_loss_dict[advanced_iters_key]))
                 if avg > 0.0:
-                    log_string += ' {}: {:.6E} |'.format(key, avg)
+                    log_string += ' {}: {:.10E} |'.format(key, avg)
                 total_loss_dict[key] = torch.cuda.FloatTensor([0.0])
         log_string += ' loss scale: {:.1f} |'.format(loss_scale)
         if grad_norm is not None:

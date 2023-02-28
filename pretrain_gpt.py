@@ -25,6 +25,16 @@ def model_provider(pre_process=True, post_process=True):
         pre_process=pre_process,
         post_process=post_process
     )
+
+    save_ckpt_345m =False
+    if save_ckpt_345m:
+        state = model.state_dict_for_save_checkpoint()
+        torch.save("random_init_torch_ckpt.bin", state)
+    
+    load_ckpt_345m = True
+    if load_ckpt_345m:
+        model.load_state_dict(torch.load("random_init_torch_ckpt.bin", map_location="cpu"))
+
     return model
 
 

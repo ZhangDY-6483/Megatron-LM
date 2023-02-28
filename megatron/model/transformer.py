@@ -497,7 +497,9 @@ class ParallelAttention(MegatronModule):
 
         if self.attention_type == AttnType.self_attn:
             # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
+            print("attention qkv debug: ", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [hidden_states, self.query_key_value.weight, self.query_key_value.bias] ])
             mixed_x_layer, _ = self.query_key_value(hidden_states)
+            print("attention mix_layer", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [mixed_x_layer,] ])
 
             # [sq, b, (np * 3 * hn)] --> [sq, b, np, 3 * hn]
             new_tensor_shape = mixed_x_layer.size()[:-1] + \
@@ -556,6 +558,7 @@ class ParallelAttention(MegatronModule):
         # core attention computation
         # ==================================
 
+        print("attention q layer", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [query_layer,] ])
         if not self.use_flash_attn:
             if self.checkpoint_core_attention:
                 context_layer = self._checkpointed_attention_forward(
@@ -571,8 +574,10 @@ class ParallelAttention(MegatronModule):
                     context_layer = self.core_attention_flash(q, k, v)
             else:
                 context_layer = self.core_attention_flash(q, k, v)
+
             context_layer = rearrange(context_layer, 'b s h d -> s b (h d)').contiguous()
 
+        print("core_attn out", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [context_layer,] ])
         # =================
         # Output. [sq, b, h]
         # =================
@@ -689,9 +694,11 @@ class ParallelTransformerLayer(MegatronModule):
                 encoder_output=None, enc_dec_attn_mask=None,
                 inference_params=None):
         # hidden_states: [s, b, h]
-
+        print("hidden_states start", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [hidden_states,] ])
         # Layer norm at the beginning of the transformer layer.
         layernorm_output = self.input_layernorm(hidden_states)
+        # print(self.input_layernorm, self.input_layernorm.weight, self.input_layernorm.bias)
+        print("hidden norm before", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [layernorm_output,] ])
         # Self attention.
         attention_output, attention_bias = \
             self.self_attention(
@@ -699,6 +706,7 @@ class ParallelTransformerLayer(MegatronModule):
                 attention_mask,
                 inference_params=inference_params)
 
+        print("attention_output", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [attention_output,] ])
         # Residual connection.
         if self.apply_residual_connection_post_layernorm:
             residual = layernorm_output
