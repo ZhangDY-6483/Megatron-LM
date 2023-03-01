@@ -11,7 +11,7 @@ export MASTER_ADDR=`hostname -i`
 export MASTER_PORT=6000
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-GPT_ARGS="--num-layers 24 \
+GPT_ARGS="--num-layers 1 \
           --hidden-size 1024 \
           --attention-dropout 0.0 \
           --hidden-dropout 0.0 \
