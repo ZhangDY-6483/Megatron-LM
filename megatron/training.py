@@ -611,7 +611,7 @@ def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
             args.consumed_train_samples)
         log_string += ' elapsed time per iteration (ms): {:.1f} |'.format(
             elapsed_time_per_iteration * 1000.0)
-        log_string += ' learning rate: {:.3E} |'.format(learning_rate)
+        log_string += ' learning rate: {:.5e} |'.format(learning_rate)
         log_string += ' global batch size: {:5d} |'.format(batch_size)
         for key in total_loss_dict:
             if key not in [advanced_iters_key, skipped_iters_key,
@@ -619,7 +619,7 @@ def training_log(loss_dict, total_loss_dict, learning_rate, iteration,
                 avg = total_loss_dict[key].item() / \
                       float(max(1, total_loss_dict[advanced_iters_key]))
                 if avg > 0.0:
-                    log_string += ' {}: {:.10E} |'.format(key, avg)
+                    log_string += ' {}: {:.9f} |'.format(key, avg)
                 total_loss_dict[key] = torch.cuda.FloatTensor([0.0])
         log_string += ' loss scale: {:.1f} |'.format(loss_scale)
         if grad_norm is not None:
@@ -678,6 +678,12 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
     timers('interval-time', log_level=0).start(barrier=True)
     print_datetime('before the start of training step')
     report_memory_flag = True
+    
+    #if iteration==0 :
+    #   save_checkpoint_and_time(iteration, model, optimizer,
+    #                         opt_param_scheduler)
+    #   print("######################end save")
+    #exit(0)
     while iteration < args.train_iters:
         update_num_microbatches(args.consumed_train_samples)
         args.curr_iteration = iteration

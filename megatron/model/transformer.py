@@ -5,6 +5,8 @@ import math
 from contextlib import nullcontext
 import torch
 import torch.nn.functional as F
+import xformers
+import numpy as np
 
 from megatron import get_timers, get_args, core, get_num_microbatches
 from .module import MegatronModule
@@ -24,6 +26,10 @@ try:
     from flash_attn.flash_attn_interface import flash_attn_unpadded_func
 except ImportError:
     flash_attn_unpadded_func = None
+
+import xformers.ops
+memory_efficient_attention = xformers.ops.memory_efficient_attention
+LowerTriangularMask = xformers.ops.LowerTriangularMask
 
 """ We use the following notation throughout this file:
      h: hidden size
@@ -270,7 +276,6 @@ class CoreAttention(MegatronModule):
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
-
         if not self.sequence_parallel:
             with tensor_parallel.get_cuda_rng_tracker().fork():
                 attention_probs = self.attention_dropout(attention_probs)
@@ -356,6 +361,64 @@ class FlashSelfAttention(torch.nn.Module):
         output = rearrange(output, '(b s) ... -> b s ...', b=batch_size)
         return output
 
+class XformersSelfAttention(torch.nn.Module):
+    """Implement the scaled dot product attention with softmax.
+    Arguments
+    ---------
+        softmax_scale: The temperature to use for the softmax attention.
+                      (default: 1/sqrt(d_keys) where d_keys is computed at
+                      runtime)
+        attention_dropout: The dropout rate to apply to the attention
+                           (default: 0.0)
+    """
+    def __init__(self, causal=False, softmax_scale=None, attention_dropout=0.0,
+                 device=None, dtype=None):
+        super().__init__()
+        assert memory_efficient_attention is not None, ('Please install FlashAttention first, '
+                                                      'e.g., with pip install flash-attn')
+        assert rearrange is not None, 'Please install einops first, e.g., with pip install einops'
+        self.causal = causal
+        self.softmax_scale = softmax_scale
+        self.dropout_p = attention_dropout
+
+    def mask_bool2float(self, b, head_num):
+        a = torch.zeros_like(b).float()
+        a.masked_fill(~b, float('-inf'))
+        a = a.repeat(1, head_num, 1, 1)
+        return a
+    
+    def forward(self, q, k, v, mask=None):
+        """Implements the multihead softmax attention.
+        Arguments
+        ---------
+            q, k, v: The tensor containing the query, key, and value. (B, S, H, D)
+        """
+        assert q.is_cuda
+        
+        if self.causal:
+            self.attn_bias = LowerTriangularMask()
+        elif mask is not None:
+            # self.attn_bias = self.mask_bool2float(mask, q.shape[2])
+            q_temp = q.transpose(1, 2)
+            k_temp = k.transpose(1, 2)
+            product = torch.matmul(q_temp, k_temp.transpose(-2, -1))
+            def get_triangle_upper_mask(x):
+                mask = torch.full_like(x, -np.inf)
+                mask = torch.triu(mask, diagonal=1)
+                return mask
+            self.attn_bias = get_triangle_upper_mask(product)            
+            self.attn_bias.requires_grad = False
+        else:
+            self.attn_bias = None
+            
+        output = memory_efficient_attention(
+            query=q,
+            key=k,
+            value=v,
+            p=self.dropout_p,
+            attn_bias=self.attn_bias,
+        )
+        return output
 
 class ParallelAttention(MegatronModule):
     """Parallel self-attention layer abstract class.
@@ -377,6 +440,7 @@ class ParallelAttention(MegatronModule):
         self.sequence_parallel = args.sequence_parallel
 
         self.use_flash_attn = args.use_flash_attn
+        self.use_memory_attn = args.use_memory_attn
         if self.use_flash_attn:
             if flash_attn_unpadded_func is None:
                 raise ImportError('FlashAttention is not installed, please install with '
@@ -385,6 +449,15 @@ class ParallelAttention(MegatronModule):
                                                           'self-attention for now')
             assert self.attn_mask_type == AttnMaskType.causal, ('FlashAttention code path only '
                                                                 'supports causal mask for now')
+            if rearrange is None:
+                raise ImportError('einops is not installed, please install with pip install einops')
+
+        if self.use_memory_attn:
+            if memory_efficient_attention is None:
+                raise ImportError('xformers is not installed, please install with '
+                                  'pip install xformers')
+            assert attention_type == AttnType.self_attn, ('xformers code path only supports '
+                                                          'self-attention for now')
             if rearrange is None:
                 raise ImportError('einops is not installed, please install with pip install einops')
 
@@ -433,6 +506,11 @@ class ParallelAttention(MegatronModule):
             self.core_attention_flash = FlashSelfAttention(
                 causal=True, attention_dropout=args.attention_dropout
             )
+        elif self.use_memory_attn:
+            self.core_attention_memory = XformersSelfAttention(
+                causal=False,
+                attention_dropout=args.attention_dropout,
+            )
 
         # Output.
         self.dense = tensor_parallel.RowParallelLinear(
@@ -477,6 +555,7 @@ class ParallelAttention(MegatronModule):
         # =================================================
         # Pre-allocate memory for key-values for inference.
         # =================================================
+
         if inference_params:
             if self.layer_number not in inference_params.key_value_memory_dict:
                 inf_max_seq_len = inference_params.max_sequence_len
@@ -497,9 +576,7 @@ class ParallelAttention(MegatronModule):
 
         if self.attention_type == AttnType.self_attn:
             # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
-            print("attention qkv debug: ", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [hidden_states, self.query_key_value.weight, self.query_key_value.bias] ])
             mixed_x_layer, _ = self.query_key_value(hidden_states)
-            print("attention mix_layer", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [mixed_x_layer,] ])
 
             # [sq, b, (np * 3 * hn)] --> [sq, b, np, 3 * hn]
             new_tensor_shape = mixed_x_layer.size()[:-1] + \
@@ -557,9 +634,7 @@ class ParallelAttention(MegatronModule):
         # ==================================
         # core attention computation
         # ==================================
-
-        print("attention q layer", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [query_layer,] ])
-        if not self.use_flash_attn:
+        if (not self.use_flash_attn) and (not self.use_memory_attn):
             if self.checkpoint_core_attention:
                 context_layer = self._checkpointed_attention_forward(
                     query_layer, key_layer, value_layer, attention_mask)
@@ -569,15 +644,27 @@ class ParallelAttention(MegatronModule):
         else:
             q, k, v = [rearrange(x, 's b ... -> b s ...').contiguous()
                        for x in (query_layer, key_layer, value_layer)]
+            
             if not self.sequence_parallel:
                 with tensor_parallel.get_cuda_rng_tracker().fork():
-                    context_layer = self.core_attention_flash(q, k, v)
+                    if self.use_flash_attn:
+                        context_layer = self.core_attention_flash(q, k, v)
+                    else:
+                        context_layer = self.core_attention_memory(q, k, v, attention_mask)
             else:
-                context_layer = self.core_attention_flash(q, k, v)
+                if self.use_flash_attn:
+                    context_layer = self.core_attention_flash(q, k, v)
+                else:
+                    context_layer = self.core_attention_memory(q, k, v, attention_mask)
 
             context_layer = rearrange(context_layer, 'b s h d -> s b (h d)').contiguous()
+       
+            # print("attn_mask")
+            # print(attention_mask.shape)
+            # diff1 = context_layer-self._checkpointed_attention_forward(
+            #       query_layer, key_layer, value_layer, attention_mask)
+            # print(np.max(np.abs(diff1.detach().cpu().numpy())))
 
-        print("core_attn out", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [context_layer,] ])
         # =================
         # Output. [sq, b, h]
         # =================
@@ -694,11 +781,9 @@ class ParallelTransformerLayer(MegatronModule):
                 encoder_output=None, enc_dec_attn_mask=None,
                 inference_params=None):
         # hidden_states: [s, b, h]
-        print("hidden_states start", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [hidden_states,] ])
+
         # Layer norm at the beginning of the transformer layer.
         layernorm_output = self.input_layernorm(hidden_states)
-        # print(self.input_layernorm, self.input_layernorm.weight, self.input_layernorm.bias)
-        print("hidden norm before", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [layernorm_output,] ])
         # Self attention.
         attention_output, attention_bias = \
             self.self_attention(
@@ -706,7 +791,6 @@ class ParallelTransformerLayer(MegatronModule):
                 attention_mask,
                 inference_params=inference_params)
 
-        print("attention_output", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [attention_output,] ])
         # Residual connection.
         if self.apply_residual_connection_post_layernorm:
             residual = layernorm_output
@@ -1043,9 +1127,10 @@ class ParallelTransformer(MegatronModule):
         """Forward method with activation checkpointing."""
         def custom(start, end, is_transformer_engine=False):
             def custom_forward(*args, **kwargs):
+                x_, *args = args
                 for index in range(start, end):
                     layer = self._get_layer(index)
-                    x_ = layer(*args, **kwargs)
+                    x_ = layer(x_, *args, **kwargs)
                 return x_
             def custom_forward_transformer_engine(*args, **kwargs):
                 return custom_forward(*args, is_first_microbatch=is_first_microbatch, **kwargs)

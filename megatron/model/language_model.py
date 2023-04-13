@@ -424,7 +424,6 @@ class TransformerLanguageModel(MegatronModule):
         # torch.save(enc_attn_mask, "inputs/enc_attn_mask")
         # exit(0)
 
-        print("input_ids", [ {"sum": x.abs().sum().item(),"mean" : x.abs().float().mean().item()} for x in [enc_input_ids,] ])
         # Encoder embedding.
         if self.pre_process:
             encoder_input = self.embedding(enc_input_ids, enc_position_ids,
@@ -432,7 +431,6 @@ class TransformerLanguageModel(MegatronModule):
         else:
             encoder_input = None
 
-        print("embedding_output", [ {"sum": x.abs().sum().item(),"mean" : x.abs().mean().item()} for x in [encoder_input,] ])
         # Run encoder.
         if enc_hidden_states is None:
             if self.encoder is not None:

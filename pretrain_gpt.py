@@ -9,6 +9,7 @@ from megatron import print_rank_0
 from megatron import get_timers
 from megatron import get_tokenizer
 from megatron.core import tensor_parallel
+from megatron.core import tensor_parallel, mpu
 from megatron.data.gpt_dataset import build_train_valid_test_datasets
 from megatron.model import GPTModel, ModelType
 from megatron.training import pretrain
@@ -26,17 +27,25 @@ def model_provider(pre_process=True, post_process=True):
         post_process=post_process
     )
 
-    save_ckpt_345m =False
+    save_ckpt_345m = False
     if save_ckpt_345m:
         state = model.state_dict_for_save_checkpoint()
-        torch.save("random_init_torch_ckpt.bin", state)
-    
-    load_ckpt_345m = True
+
+        if torch.distributed.is_initialized():
+            mp_rank = mpu.get_tensor_model_parallel_rank()
+            pp_rank = mpu.get_pipeline_model_parallel_rank()
+            torch.save(state, "random_init_torch_ckpt_175b_188/mp_rank{}_pp_rank{}.bin".format(mp_rank, pp_rank))
+            import time
+            time.sleep(10)
+
+    load_ckpt_345m = False
     if load_ckpt_345m:
-        model.load_state_dict(torch.load("random_init_torch_ckpt.bin", map_location="cpu"))
+        if torch.distributed.is_initialized():
+            mp_rank = mpu.get_tensor_model_parallel_rank()
+            pp_rank = mpu.get_pipeline_model_parallel_rank()
+            model.load_state_dict(torch.load("random_init_torch_ckpt_175b_188/mp_rank{}_pp_rank{}.bin".format(mp_rank, pp_rank), map_location="cpu"))
 
     return model
-
 
 def get_batch(data_iterator):
     """Generate a batch"""

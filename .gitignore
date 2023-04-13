@@ -3,3 +3,7 @@ __pycache__
 build
 .coverage_*
 *.egg-info
+my-gpt2_text/
+random_init_torch_ckpt_175b_188/
+*.log
+checkpoints/

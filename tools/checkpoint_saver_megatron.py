@@ -264,6 +264,7 @@ def save_checkpoint(queue, args):
                 if pp_rank != 0:
                     # Copy word embeddings to final pipeline rank
                     models[tp_rank].word_embeddings.weight.data.copy_(out_word_embed[tp_rank])
+                    print(f"embed weight size is {models[tp_rank].word_embeddings.weight.shape}")
             del final_layernorm_weight
             del final_layernorm_bias
             check_message(msg)

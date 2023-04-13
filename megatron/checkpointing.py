@@ -272,6 +272,9 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler):
             ensure_directory_exists(model_checkpoint_name)
             torch.save(state_dict, model_checkpoint_name)
 
+    #print("############3##################### model :", model_state_dict.keys(), optim_state_dict.keys(), model[0].state_dict_for_save_checkpoint().keys())
+    #state = model[0].state_dict_for_save_checkpoint()
+    #torch.save("random_init_torch_ckpt_1.3B.bin", state)
     # Wait so everyone is done (necessary)
     if torch.distributed.is_initialized():
         torch.distributed.barrier()

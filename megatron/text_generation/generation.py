@@ -292,6 +292,7 @@ def beam_search_and_return_on_first_stage(model, tokens, lengths, beam_size, sto
     assert(batch_size == 1)
     prompt_length = lengths.item()
     final_sequence_length = tokens.size(1)
+    print(f"final seq len{final_sequence_length}")
     final_sequence_length = min(final_sequence_length, args.max_position_embeddings)
     
     # If the context is too big, this happens
