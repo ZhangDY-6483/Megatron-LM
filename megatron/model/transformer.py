@@ -508,7 +508,7 @@ class ParallelAttention(MegatronModule):
             )
         elif self.use_memory_attn:
             self.core_attention_memory = XformersSelfAttention(
-                causal=False,
+                causal=True,
                 attention_dropout=args.attention_dropout,
             )
 
